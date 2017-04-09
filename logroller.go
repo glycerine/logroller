@@ -1,25 +1,30 @@
-// Package lumberjack provides a rolling logger.
+// Package logroller descends from Nate Finch's lumberjack.v2
+// and provides a similar rolling logger, with three additions:
 //
-// Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
-// thusly:
+// 1) gzip compression of logs, from https://github.com/natefinch/lumberjack/pull/16 and donovansolms:v2.0
 //
-//   import "gopkg.in/natefinch/lumberjack.v2"
+// 2) a separate log directory, from https://github.com/natefinch/lumberjack/pull/39 and GJRTimmer:archive
 //
-// The package name remains simply lumberjack, and the code resides at
-// https://github.com/natefinch/lumberjack under the v2.0 branch.
+// 3) a fixed number of preamble lines that are copied from the first
+//    log to every subsequent rotated log, in order to capture
+//    version, config info, and command line args.
 //
-// Lumberjack is intended to be one part of a logging infrastructure.
+//
+//   import "github.com/glycerine/logroller"
+//
+//
+// Logroller is intended to be one part of a logging infrastructure.
 // It is not an all-in-one solution, but instead is a pluggable
 // component at the bottom of the logging stack that simply controls the files
 // to which logs are written.
 //
-// Lumberjack plays well with any logging package that can write to an
+// Logroller plays well with any logging package that can write to an
 // io.Writer, including the standard library's log package.
 //
-// Lumberjack assumes that only one process is writing to the output files.
-// Using the same lumberjack configuration from multiple processes on the same
+// Logroller assumes that only one process is writing to the output files.
+// Using the same logroller configuration from multiple processes on the same
 // machine will result in improper behavior.
-package lumberjack
+package logroller
 
 import (
 	"compress/gzip"
@@ -35,8 +40,8 @@ import (
 )
 
 const (
-	backupTimeFormat      = "2006-01-02T15-04-05.000"
-	defaultMaxSize        = 100
+	backupTimeFormat      = time.RFC3339Nano //"2006-01-02T15-04-05.000"
+	defaultMaxSize        = 100 * Megabyte
 	compressFileExtension = ".gz"
 )
 
@@ -46,13 +51,13 @@ var _ io.WriteCloser = (*Logger)(nil)
 // Logger is an io.WriteCloser that writes to the specified filename.
 //
 // Logger opens or creates the logfile on first Write.  If the file exists and
-// is less than MaxSize megabytes, lumberjack will open and append to that file.
-// If the file exists and its size is >= MaxSize megabytes, the file is renamed
+// is less than MaxSizeBytes, logroller will open and append to that file.
+// If the file exists and its size is >= MaxSizeBytes, the file is renamed
 // by putting the current time in a timestamp in the name immediately before the
 // file's extension (or the end of the filename if there's no extension). A new
 // log file is then created using original filename.
 //
-// Whenever a write would cause the current log file exceed MaxSize megabytes,
+// Whenever a write would cause the current log file exceed MaxSizeBytes,
 // the current file is closed, renamed, and a new log file created with the
 // original name. Thus, the filename you give Logger is always the "current" log
 // file.
@@ -77,18 +82,18 @@ var _ io.WriteCloser = (*Logger)(nil)
 // If MaxBackups and MaxAge are both 0, no old log files will be deleted.
 type Logger struct {
 	// Filename is the file to write logs to.  Backup log files will be retained
-	// in the same directory.  It uses <processname>-lumberjack.log in
+	// in the same directory.  It uses <processname>-logroller.log in
 	// os.TempDir() if empty.
 	Filename string `json:"filename" yaml:"filename"`
 
 	// ArchiveDir is the directory where to write the rotated logs to.
 	// If not set it will default to the current directory of the logfile.
-	// Lumberjack will assume the archive directory already exists.
+	// Logroller will assume the archive directory already exists.
 	ArchiveDir string `json:"archivedir,omitempty" yaml:"archivedir,omitempty"`
 
-	// MaxSize is the maximum size in megabytes of the log file before it gets
+	// MaxSizeBytes is the maximum size in bytes of the log file before it gets
 	// rotated. It defaults to 100 megabytes.
-	MaxSize int `json:"maxsize" yaml:"maxsize"`
+	MaxSizeBytes int `json:"maxsizebytes" yaml:"maxsizebytes"`
 
 	// MaxAge is the maximum number of days to retain old log files based on the
 	// timestamp encoded in their filename.  Note that a day is defined as 24
@@ -111,11 +116,22 @@ type Logger struct {
 	// time.
 	LocalTime bool `json:"localtime" yaml:"localtime"`
 
+	// PreambleLineCount sets the max number of lines
+	// that we store in the preamble. If left at the default
+	// of zero, then no Preamble will be created or replayed.
+	PreambleLineCount int
+
+	// Preamble records the first N logged lines for replay at
+	// the top of every new log file, where N is PreambleLineCount.
+	Preamble []string
+
 	size int64
 	file *os.File
 	mu   sync.Mutex
 	cmu  sync.Mutex
 }
+
+const Megabyte = 1024 * 1024
 
 var (
 	// currentTime exists so it can be mocked out by tests.
@@ -123,11 +139,6 @@ var (
 
 	// os_Stat exists so it can be mocked out by tests.
 	os_Stat = os.Stat
-
-	// megabyte is the conversion factor between MaxSize and bytes.  It is a
-	// variable so tests can mock it out and not need to write megabytes of data
-	// to disk.
-	megabyte = 1024 * 1024
 )
 
 // Write implements io.Writer.  If a write would cause the log file to be larger
@@ -150,7 +161,7 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 			return 0, err
 		}
 		if l.CompressBackups {
-			go l.compressLogs()
+			l.compressLogs()
 		}
 	}
 
@@ -162,6 +173,11 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 
 	n, err = l.file.Write(p)
 	l.size += int64(n)
+	//fmt.Printf("Write wrote %v '%s' to file %s\n", n, string(p), l.file.Name())
+
+	if len(l.Preamble) < l.PreambleLineCount {
+		l.Preamble = append(l.Preamble, string(p))
+	}
 
 	return n, err
 }
@@ -198,6 +214,7 @@ func (l *Logger) Rotate() error {
 // (if it exists), opens a new file with the original filename, and then runs
 // cleanup.
 func (l *Logger) rotate() error {
+	//fmt.Printf("rotate() happening\n")
 	if err := l.close(); err != nil {
 		return err
 	}
@@ -211,22 +228,27 @@ func (l *Logger) rotate() error {
 // openNew opens a new log file for writing, moving any old log file out of the
 // way.  This methods assumes the file has already been closed.
 func (l *Logger) openNew() error {
-	err := os.MkdirAll(l.dir(), 0744)
+	err := os.MkdirAll(l.currentLogDir(), 0744)
 	if err != nil {
-		return fmt.Errorf("can't make directories for new logfile: %s", err)
+		return fmt.Errorf("can't make directory for new logfile: %s", err)
 	}
-
+	err = os.MkdirAll(l.archiveDir(), 0744)
+	if err != nil {
+		return fmt.Errorf("can't make directory for rotated logfiles: %s", err)
+	}
 	name := l.filename()
+
 	mode := os.FileMode(0644)
 	info, err := os_Stat(name)
 	if err == nil {
 		// Copy the mode off the old logfile.
 		mode = info.Mode()
 		// move the existing file
-		newname := backupName(name, l.ArchiveDir, l.LocalTime)
+		newname := backupName(name, l.archiveDir(), l.LocalTime)
 		if err := os.Rename(name, newname); err != nil {
 			return fmt.Errorf("can't rename log file: %s", err)
 		}
+		//fmt.Printf("openNew has renamed %s -> %s\n", name, newname)
 
 		// this is a no-op anywhere but linux
 		if err := chown(name, info); err != nil {
@@ -243,6 +265,21 @@ func (l *Logger) openNew() error {
 	}
 	l.file = f
 	l.size = 0
+
+	// replay the Preamble, so that the original version/config
+	// lines (the first l.PreambleLineCount lines logged) are retained at
+	// the top of each log file.
+	if len(l.Preamble) > 0 {
+		for i := range l.Preamble {
+			writeme := []byte(l.Preamble[i])
+			n, err := l.file.Write(writeme)
+			l.size += int64(n)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -300,7 +337,7 @@ func (l *Logger) filename() string {
 	if l.Filename != "" {
 		return l.Filename
 	}
-	name := filepath.Base(os.Args[0]) + "-lumberjack.log"
+	name := filepath.Base(os.Args[0]) + "-logroller.log"
 	return filepath.Join(os.TempDir(), name)
 }
 
@@ -308,7 +345,7 @@ func (l *Logger) filename() string {
 // none of them are older than MaxAge.
 func (l *Logger) cleanup() error {
 	if l.CompressBackups {
-		go l.compressLogs()
+		l.compressLogs()
 	}
 
 	if l.MaxBackups == 0 && l.MaxAge == 0 {
@@ -342,7 +379,7 @@ func (l *Logger) cleanup() error {
 		return nil
 	}
 
-	go deleteAll(l.dir(), deletes)
+	go deleteAll(l.archiveDir(), deletes)
 
 	return nil
 }
@@ -367,7 +404,7 @@ func (l *Logger) compressLogs() {
 	for _, file := range files {
 		_, ext := l.prefixAndExt()
 		if ext != compressFileExtension {
-			if err := compressLog(filepath.Join(l.dir(), file.Name())); err != nil {
+			if err := compressLog(filepath.Join(l.archiveDir(), file.Name())); err != nil {
 				fmt.Errorf("Unable to compress backup log file: %s", err)
 			}
 		}
@@ -379,7 +416,7 @@ func (l *Logger) compressLogs() {
 // includeCompressed to true will include files with the given
 // compressFileExtension into the returned list
 func (l *Logger) oldLogFiles(includeCompressed bool) ([]logInfo, error) {
-	files, err := ioutil.ReadDir(l.dir())
+	files, err := ioutil.ReadDir(l.archiveDir())
 	if err != nil {
 		return nil, fmt.Errorf("can't read log file directory: %s", err)
 	}
@@ -404,7 +441,7 @@ func (l *Logger) oldLogFiles(includeCompressed bool) ([]logInfo, error) {
 			logFiles = append(logFiles, logInfo{t, f})
 		}
 		// error parsing means that the suffix at the end was not generated
-		// by lumberjack, and therefore it's not a backup file.
+		// by logroller, and therefore it's not a backup file.
 	}
 
 	sort.Sort(byFormatTime(logFiles))
@@ -461,19 +498,23 @@ func (l *Logger) timeFromName(filename, prefix, ext string) string {
 
 // max returns the maximum size in bytes of log files before rolling.
 func (l *Logger) max() int64 {
-	if l.MaxSize == 0 {
-		return int64(defaultMaxSize * megabyte)
+	if l.MaxSizeBytes == 0 {
+		return int64(defaultMaxSize)
 	}
-	return int64(l.MaxSize) * int64(megabyte)
+	return int64(l.MaxSizeBytes)
 }
 
-// dir returns the directory for the current filename.
+// archiveDir returns the archive directory for the current filename.
 // if ArchiveDir is set it will return the archive directory
 // so the old log files will be located at the correct location
-func (l *Logger) dir() string {
+func (l *Logger) archiveDir() string {
 	if len(l.ArchiveDir) > 0 {
 		return l.ArchiveDir
 	}
+	return l.filename() + ".rotated"
+}
+
+func (l *Logger) currentLogDir() string {
 	return filepath.Dir(l.filename())
 }
 

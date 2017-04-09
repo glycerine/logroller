@@ -1,4 +1,4 @@
-package lumberjack
+package logroller
 
 import (
 	"fmt"

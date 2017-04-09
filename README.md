@@ -1,42 +1,50 @@
-# lumberjack  [![GoDoc](https://godoc.org/gopkg.in/natefinch/lumberjack.v2?status.png)](https://godoc.org/gopkg.in/natefinch/lumberjack.v2) [![Build Status](https://drone.io/github.com/natefinch/lumberjack/status.png)](https://drone.io/github.com/natefinch/lumberjack/latest) [![Build status](https://ci.appveyor.com/api/projects/status/00gchpxtg4gkrt5d)](https://ci.appveyor.com/project/natefinch/lumberjack) [![Coverage Status](https://coveralls.io/repos/natefinch/lumberjack/badge.svg?branch=v2.0)](https://coveralls.io/r/natefinch/lumberjack?branch=v2.0)
+# logroller
 
-### Lumberjack is a Go package for writing logs to rolling files.
+### Logroller is a Go package for writing logs to rolling files.
 
-Package lumberjack provides a rolling logger.
+Package logroller descends from Nate Finch's lumberjack.v2 (https://github.com/natefinch/lumberjack)
+and provides a similar rolling logger, with three additions:
 
-Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
-thusly:
+1) gzip compression of rotated logs, from https://github.com/natefinch/lumberjack/pull/16 and donovansolms:v2.0
 
-    import "gopkg.in/natefinch/lumberjack.v2"
+2) a separate rotated log directory, from https://github.com/natefinch/lumberjack/pull/39 and GJRTimmer:archive
 
-The package name remains simply lumberjack, and the code resides at
-https://github.com/natefinch/lumberjack under the v2.0 branch.
+3) a fixed number of preamble lines that are copied from the first
+log to every subsequent rotated log, in order to capture
+version, config info, and command line args.
 
-Lumberjack is intended to be one part of a logging infrastructure.
+The rest of the README is adapted from the lumberjack.v2 README:
+
+-----------------------------------------
+
+Package logroller provides a rolling logger.
+
+Logroller is intended to be one part of a logging infrastructure.
 It is not an all-in-one solution, but instead is a pluggable
 component at the bottom of the logging stack that simply controls the files
 to which logs are written.
 
-Lumberjack plays well with any logging package that can write to an
+Logroller plays well with any logging package that can write to an
 io.Writer, including the standard library's log package.
 
-Lumberjack assumes that only one process is writing to the output files.
-Using the same lumberjack configuration from multiple processes on the same
+Logroller assumes that only one process is writing to the output files.
+Using the same logroller configuration from multiple processes on the same
 machine will result in improper behavior.
 
 
 **Example**
 
-To use lumberjack with the standard library's log package, just pass it into the SetOutput function when your application starts.
+To use logroller with the standard library's log package, just pass it into the SetOutput function when your application starts.
 
 Code:
 
 ```go
-log.SetOutput(&lumberjack.Logger{
+log.SetOutput(&logroller.Logger{
     Filename:   "/var/log/myapp/foo.log",
     MaxSize:    500, // megabytes
     MaxBackups: 3,
     MaxAge:     28, //days
+    PreambleLineCount: 10,
 })
 ```
 
@@ -46,13 +54,13 @@ log.SetOutput(&lumberjack.Logger{
 ``` go
 type Logger struct {
     // Filename is the file to write logs to.  Backup log files will be retained
-    // in the same directory.  It uses <processname>-lumberjack.log in
+    // in the same directory.  It uses <processname>-logroller.log in
     // os.TempDir() if empty.
     Filename string `json:"filename" yaml:"filename"`
 
     // ArchiveDir is the directory where to write the rotated logs to.
     // If not set it will default to the current directory of the logfile.
-    // Lumberjack will assume the archive directory already exists.
+    // Logroller will assume the archive directory already exists.
     ArchiveDir string `json:"archivedir" yaml:"archivedir"`
 
     // MaxSize is the maximum size in megabytes of the log file before it gets
@@ -79,13 +87,23 @@ type Logger struct {
     // backup files is the computer's local time.  The default is to use UTC
     // time.
     LocalTime bool `json:"localtime" yaml:"localtime"`
-    // contains filtered or unexported fields
+
+    // PreambleLineCount sets the max number of lines
+    // that we store in the preamble. If left at the default
+    // of zero, then no Preamble will be created or replayed.
+    PreambleLineCount int
+
+    // Preamble records the first N logged lines for replay at
+    // the top of every new log file, where N is PreambleLineCount.
+    Preamble []string
+
+    // contains filtered or unexported fields ...
 }
 ```
 Logger is an io.WriteCloser that writes to the specified filename.
 
 Logger opens or creates the logfile on first Write.  If the file exists and
-is less than MaxSize megabytes, lumberjack will open and append to that file.
+is less than MaxSize megabytes, logroller will open and append to that file.
 If the file exists and its size is >= MaxSize megabytes, the file is renamed
 by putting the current time in a timestamp in the name immediately before the
 file's extension (or the end of the filename if there's no extension). A new
@@ -152,7 +170,7 @@ Example of how to rotate in response to SIGHUP.
 Code:
 
 ```go
-l := &lumberjack.Logger{}
+l := &logroller.Logger{}
 log.SetOutput(l)
 c := make(chan os.Signal, 1)
 signal.Notify(c, syscall.SIGHUP)

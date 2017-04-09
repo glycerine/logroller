@@ -5,7 +5,7 @@
 Package logroller descends from Nate Finch's lumberjack.v2 (https://github.com/natefinch/lumberjack)
 and provides a similar rolling logger, with three additions:
 
-1) gzip compression of rotated logs, derived from https://github.com/natefinch/lumberjack/pull/16 and donovansolms:v2.0. Compression is done inline instead of in parallel to avoid races with future logging.
+1) gzip compression of rotated logs, derived from https://github.com/natefinch/lumberjack/pull/16 and donovansolms:v2.0.
 
 2) a separate rotated log directory, from https://github.com/natefinch/lumberjack/pull/39 and GJRTimmer:archive
 

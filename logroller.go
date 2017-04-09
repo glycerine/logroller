@@ -161,7 +161,7 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 			return 0, err
 		}
 		if l.CompressBackups {
-			l.compressLogs()
+			go l.compressLogs()
 		}
 	}
 
@@ -350,7 +350,7 @@ func (l *Logger) filename() string {
 // none of them are older than MaxAge.
 func (l *Logger) cleanup() error {
 	if l.CompressBackups {
-		l.compressLogs()
+		go l.compressLogs()
 	}
 
 	if l.MaxBackups == 0 && l.MaxAge == 0 {
@@ -403,7 +403,7 @@ func (l *Logger) compressLogs() {
 	defer l.cmu.Unlock()
 	files, err := l.oldLogFiles(false)
 	if err != nil {
-		fmt.Errorf("Unable to compress log files: %s", err)
+		fmt.Errorf("Unable to read rotated log files: %s", err)
 	}
 
 	for _, file := range files {
@@ -418,9 +418,9 @@ func (l *Logger) compressLogs() {
 
 // oldLogFiles returns the list of backup log files stored in the same
 // directory as the current log file, sorted by ModTime. Setting
-// includeCompressed to true will include files with the given
-// compressFileExtension into the returned list
-func (l *Logger) oldLogFiles(includeCompressed bool) ([]logInfo, error) {
+// assumeCompressed to true will return files with the global
+// compressFileExtension.
+func (l *Logger) oldLogFiles(assumeCompressed bool) ([]logInfo, error) {
 	files, err := ioutil.ReadDir(l.archiveDir())
 	if err != nil {
 		return nil, fmt.Errorf("can't read log file directory: %s", err)
@@ -429,7 +429,7 @@ func (l *Logger) oldLogFiles(includeCompressed bool) ([]logInfo, error) {
 
 	prefix, ext := l.prefixAndExt()
 
-	if includeCompressed {
+	if assumeCompressed {
 		ext = ext + compressFileExtension
 	}
 
@@ -457,28 +457,28 @@ func (l *Logger) oldLogFiles(includeCompressed bool) ([]logInfo, error) {
 // compressLog compresses the log with given filename using Gzip compression
 func compressLog(filename string) error {
 
-	reader, err := os.Open(filename)
+	r, err := os.Open(filename)
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer r.Close()
 
-	writer, err := os.Create(filename + compressFileExtension)
+	w, err := os.Create(filename + compressFileExtension)
 	if err != nil {
 		return err
 	}
-	defer writer.Close()
+	defer w.Close()
 
-	gzwriter := gzip.NewWriter(writer)
+	gzwriter := gzip.NewWriter(w)
 	defer gzwriter.Close()
 
-	if _, err := io.Copy(gzwriter, reader); err != nil {
+	if _, err := io.Copy(gzwriter, r); err != nil {
 		return err
 	}
 
-	// Explicitly closing the reader in addition to defer reader.Close so that
+	// Explicitly closing the r in addition to defer r.Close so that
 	// we don't get 'file is being used by another process' errors on Windows
-	reader.Close()
+	r.Close()
 	if err := os.Remove(filename); err != nil {
 		return err
 	}

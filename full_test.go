@@ -9,6 +9,16 @@ import (
 	"github.com/glycerine/logroller"
 )
 
+var utclog *log.Logger
+
+func init() {
+	utclog = log.New(
+		os.Stderr,
+		"",
+		log.LstdFlags|log.LUTC|log.Lmicroseconds,
+	)
+}
+
 // To use logroller with the standard library's log package, just pass it into
 // the SetOutput function when your application starts.
 func TestFullLogging(t *testing.T) {
@@ -17,10 +27,10 @@ func TestFullLogging(t *testing.T) {
 	_, _ = org, tmp
 	defer tempDirCleanup(org, tmp)
 
-	log.SetOutput(&logroller.Logger{
+	utclog.SetOutput(&logroller.Logger{
 		Filename:     "foo.log",
-		MaxSizeBytes: 30,
-		MaxBackups:   3,
+		MaxSizeBytes: 114,
+		MaxBackups:   2,
 		MaxAge:       2, // days
 
 		// each new log gets this many of the original logs first lines
@@ -28,12 +38,16 @@ func TestFullLogging(t *testing.T) {
 		CompressBackups:   true,
 	})
 
-	log.Printf("line0.")
-	log.Printf("line1.")
-	log.Printf("line2.")
-	log.Printf("line3.")
-	log.Printf("line4")
-	log.Printf("line5")
+	utclog.Printf("line0.")
+	utclog.Printf("line1.")
+	utclog.Printf("line2.")
+	utclog.Printf("line3.")
+	utclog.Printf("line4.") // at size 114, each line past 4 gets its own log file
+	utclog.Printf("line5.")
+	utclog.Printf("line6.")
+	utclog.Printf("line7.")
+
+	// comment out the defer above and manually inspect the results
 }
 
 func makeAndMoveToTempDir() (origdir string, tmpdir string) {

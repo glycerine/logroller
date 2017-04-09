@@ -278,6 +278,11 @@ func (l *Logger) openNew() error {
 				return err
 			}
 		}
+		n, err := l.file.WriteString("___***___END_OF_PREAMBLE___***___\n")
+		l.size += int64(n)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil

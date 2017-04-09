@@ -161,7 +161,7 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 			return 0, err
 		}
 		if l.CompressBackups {
-			go l.compressLogs()
+			go l.compressLogs(false)
 		}
 	}
 
@@ -350,7 +350,7 @@ func (l *Logger) filename() string {
 // none of them are older than MaxAge.
 func (l *Logger) cleanup() error {
 	if l.CompressBackups {
-		go l.compressLogs()
+		go l.compressLogs(false)
 	}
 
 	if l.MaxBackups == 0 && l.MaxAge == 0 {
@@ -398,19 +398,23 @@ func deleteAll(dir string, files []logInfo) {
 }
 
 // compressLogs compresses any uncompressed logs during the cleanup process
-func (l *Logger) compressLogs() {
+func (l *Logger) compressLogs(printErrToStderr bool) {
 	l.cmu.Lock()
 	defer l.cmu.Unlock()
 	files, err := l.oldLogFiles(false)
 	if err != nil {
-		fmt.Errorf("Unable to read rotated log files: %s", err)
+		if printErrToStderr {
+			fmt.Fprintf(os.Stderr, "\nUnable to read rotated log files: %s\n", err)
+		}
 	}
 
 	for _, file := range files {
 		_, ext := l.prefixAndExt()
 		if ext != compressFileExtension {
 			if err := compressLog(filepath.Join(l.archiveDir(), file.Name())); err != nil {
-				fmt.Errorf("Unable to compress backup log file: %s", err)
+				if printErrToStderr {
+					fmt.Fprintf(os.Stderr, "\nUnable to compress backup log file: %s\n", err)
+				}
 			}
 		}
 	}

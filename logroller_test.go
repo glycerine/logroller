@@ -204,7 +204,7 @@ func TestCompressed(t *testing.T) {
 	// only the last write in it.
 	existsWithLen(filename, n, t)
 
-	l.compressLogs()
+	l.compressLogs(false)
 
 	// the backup file will use the current fake time and have the old contents.
 	compressedFilename := backupFileCompressed(dir)
